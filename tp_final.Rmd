@@ -1,0 +1,374 @@
+---
+title: "TP FINAL"
+author: "Juanjo Luna"
+date: '2022-11-11'
+output: html_document
+---
+# **ANÁLISIS DE DATOS EN SALTA**
+#### **CENTROS DEPORTVOS**
+###### <span style="color:grey">**IDEMSA, IDESA**</span>
+
+
+
+En primer lugar instalamos las librerías que vamos a requerir.
+
+
+```{r}
+library(tidyverse)
+library(sf)
+library(tidyr)
+library(dplyr)
+```
+
+
+Cargamos la información de los diferentes barrios de la ciudad de Salta descargada de la página de IDEMSA y/o IDESA y corroboramos su morfología mapeando los datos.
+
+
+```{r}
+barrios <- st_read("http://geoportal.idesa.gob.ar/geoserver/wfs?srsName=EPSG%3A4326&typename=geonode%3Abarrios_v4&outputFormat=json&version=1.0.0&service=WFS&request=GetFeature")
+```
+
+
+```{r}
+perimetro<- st_read("https://idemsa.municipalidadsalta.gob.ar/descargas/Planeamiento%20Urbano/Perimetro%20Urbano%20Consolidado/perimetro.geojson")
+```
+
+Para poder realizar un análisis importamos los datos de barrios populares para evaluar su relación con otros factores.
+
+
+```{r}
+barriospopu_salta <- st_read("https://idemsa.municipalidadsalta.gob.ar/descargas/Barrios%20de%20la%20ciudad/Barrios%20Populares/barrios%20renabap.geojson")
+```
+
+
+
+Mapeamos los barrios junto con el perimetro de la ciudad de Salta y los barrios populares del RENABAP.
+
+
+```{r}
+ggplot()+
+  geom_sf(data=barrios)+
+  geom_sf(data=perimetro,color="red", fill="transparent")+
+  geom_sf(data=barriospopu_salta,color="blue")
+```
+
+
+
+Nos planteamos la pregunta: ¿Cuál es la relación del deporte con los diferentes barrios de Salta?
+Por lo que descargamos los distintos datos de los centros deportivos de la ciudad de Salta.
+
+
+```{r}
+centros_deport <-st_read("https://idemsa.municipalidadsalta.gob.ar/descargas/Juventud%20y%20Deportes/Clubes%2C%20Federaciones%2C%20Asociaciones/clubes.geojson")
+```
+
+
+Procedemos a ver rápidamente la distribución de los diferentes tipos de establecimientos deportivos.
+
+
+```{r}
+ggplot()+
+  geom_sf(data=barriospopu_salta,fill="blue")+
+  geom_sf(data=barrios, fill="transparent", color="white")+
+  geom_sf(data=perimetro,fill="transparent",color="red")+
+  geom_sf(data=centros_deport,aes(color=tipo), alpha=0.5)
+```
+
+
+Limpiamos y ordenamos los datos del archivo geojson importado de establecimientos deportivos. Separamos los valores de longitud y latitud para tenerlos en cuenta para futuros posibles procesos.
+
+
+```{r}
+centros_deport_b <- centros_deport %>%
+  mutate(lat_int = gsub( ",.*" , "", geometry), 
+         lon_int = gsub(".*," , "", geometry ) )
+```
+
+```{r}
+centros_deport_b <- centros_deport_b %>% 
+mutate(latitude = as.numeric(str_remove(lat_int, "c\\(")), 
+         longitude = as.numeric(str_remove(lon_int, "\\)" )))
+```
+
+
+Los datos que figura sin dato, los reemplazamos por el nombre: "s/n" sin nombre.
+
+
+```{r}
+centrosdeportivos <- replace(centros_deport_b,is.na(centros_deport_b),"s/n")
+```
+
+
+Eliminamos algunos campos/columnas y agrupamos por los distintos tipo de establecimientos deportivos.
+
+
+```{r}
+editado<-centrosdeportivos %>% 
+  select( -nombre,-lat_int,-lon_int)
+editado<-editado %>% 
+  group_by(tipo) %>% 
+  summarise(cantidad=n())%>% 
+arrange(desc(cantidad))
+head(editado,7)
+```
+
+
+Unimos los datos de barrios con los centros deportivos para poder analizar la relación entre ambas bases de datos.
+
+
+```{r}
+centros_deport_geo <- centrosdeportivos %>% 
+    st_as_sf(coords = c("long", "lat"), crs = 4326)
+class(centros_deport_geo)
+```
+
+```{r}
+union_prueba <- st_join(centros_deport_geo, barrios)
+```
+
+
+Eliminamos las observaciones sin dato y volvemo a visualizar los datos.
+
+
+```{r}
+union_prueba <- union_prueba %>%
+  filter(!is.na(BARRIO_N_1))
+```
+
+```{r}
+ggplot()+
+  geom_sf(data=barrios)+
+  geom_sf(data=union_prueba, aes(color=BARRIO_N_1), alpha=0.75, show.legend = FALSE)
+```
+
+
+A esta base de datos de puntos de los establecimientos deportivos, le sacamos provecho, agrupando los datos por barrio para saber la cantidad total que hay por cada uno y sumamos una columna nueva extra de densidad de centros deportivos por m2 de cada barrio.
+
+
+```{r}
+union_prueba_b <- union_prueba %>%
+  group_by(BARRIO_N_1) %>%
+  summarise(cantidad=n(),
+            densidad_depor=mean(cantidad/Shape_Area))
+```
+
+
+Mapeamos los nuevos datos para poder tener una previsualización de la densidad, aunque la verdadera intención es poder verla en un mapa coroplético.
+
+
+```{r}
+ggplot()+
+  geom_sf(data=barrios)+
+  geom_sf(data=union_prueba_b, aes(color=densidad_depor), alpha=0.75, show.legend = FALSE)
+```
+
+
+Por lo que nuestro siguiente paso es pasar la nueva información a los polígonos de los barrios.
+
+
+```{r}
+union_prueba_b <- union_prueba_b %>%
+  st_set_geometry(NULL)
+```
+
+
+```{r}
+union_prueba_b <- union_prueba_b %>%
+  arrange(desc(cantidad))
+head(union_prueba_b)
+
+```
+
+
+Ejecutamos un LEFT JOIN a através del nombre de los barrios y luego visualizamos los datos.
+
+
+```{r}
+barrio_b <- left_join(barrios, union_prueba_b, by="BARRIO_N_1")
+```
+
+```{r}
+ggplot()+
+  geom_sf(data=barrio_b, aes(fill=densidad_depor))
+```
+
+```{r}
+ggplot()+
+  geom_sf(data=barrio_b, aes(fill=densidad_depor), color="white")+
+    labs(title = "Densidad de centros deportivos en la ciudad de Salta",
+         subtitle = "Barrios de Salta",
+         fill = "Cantidad/sup",
+         caption= "Fuente: IDEMSA, IDESA ") +
+  scale_fill_distiller(palette = "YlOrRd", direction = 1) +
+   theme_void()
+```
+
+
+Buscamos un gráfico adecuado para poder ver las cantidades por cada barrio y determinar un ranking.
+
+
+```{r}
+ggplot(union_prueba)+
+  geom_bar(aes(x=BARRIO_N_1 ))+
+  coord_flip()+
+  labs(title="Cantidad total de centros deportivos por Barrio",
+       x="Barrios",
+       y="Cantidad",
+       caption="Fuente: IDEMSA, IDESA")+
+  theme(legend.position="top",
+        legend.direction = "horizontal", 
+        legend.title=element_text(size=8, face = "bold"), 
+        legend.text=element_text(size=8), 
+        axis.text.x = element_text(colour = "gray35",size = 6), 
+        axis.text.y = element_text(colour = "gray35",size = 1))
+```
+```{r}
+ggplot()+
+  geom_sf(data=barrio_b, aes(fill=cantidad), color="white")+
+    labs(title = "Cantidad de colegios en la ciudad de Paris",
+         subtitle = "Barrios de Paris",
+         fill = "Cantidad",
+         caption= "Fuente: Paris DATA") +
+  scale_fill_distiller(palette = "YlGnBu", direction = 1) +
+   theme_void()
+```
+
+
+Con los paso y el gráfico de cantidades podemos decir que los siguientes 5 barrios son los que tiene la mayor cantidad de centros deportivos.
+1. <span style="color:red">**Centro**</span>
+2. <span style="color:red">**20 de Febrero**</span>
+3. <span style="color:red">**Belgrano**</span>
+4. Tres Cerritos
+5. Calixto Gauna
+
+## **BARRIOS POPULARES**
+
+En este caso decidimos ver la relación entre los distito centros deportivos y los barrio catalogados por el RENABAP.Por lo que unimos las bases de datos.
+
+
+```{r}
+centros_deport_geo <- st_join(centros_deport_geo, barriospopu_salta)
+
+```
+
+
+
+Vemos que sólo un centro deportivo se encuentra dentro de un barrio popular, el **Playón Villa el Sol** en el asentamiento del barrio **20 de Junio**.
+
+
+## **VISUALIZACIÓN DINÁMICA**
+
+
+Descargamos una base de mapa para cambiar la visualización de nuestra información. Usamos la información de OSM, Open Street Map.
+
+
+```{r}
+library(ggmap)
+
+library(osmdata)
+```
+
+```{r}
+bbox_salta <- getbb(" Salta, Salta, Argentina")
+```
+
+```{r}
+mapa_salta <- get_stamenmap(bbox=bbox_salta,
+                              maptype="toner-lite",
+                              zoom=14)
+```
+
+```{r}
+ggmap(mapa_salta)
+```
+```{r}
+poligono_salta <- getbb(" Salta, Salta, Argentina",
+                            format_out = "sf_polygon")
+```
+
+
+```{r}
+ggmap(mapa_salta)+
+  geom_sf(data=poligono_salta, fill=NA, color="red", size=1, inherit.aes = FALSE)+
+  labs(title="Ciudad de Salta",
+       subtitle="Prov. de Salta, Argentina",
+       caption="Fuente: Open Street Map")+
+  theme_void()
+```
+
+
+Exploramos otro tipo de visualización con **LEAFLET** y probamos que funcione bien la base principal.
+
+
+```{r}
+library(leaflet)
+```
+
+```{r}
+leaflet() %>%
+  addTiles() %>%
+  addPolygons(data=poligono_salta)
+```
+
+
+Limpiamos los dato de la base de datos de los centros deportivos para poder mapearlos con leaflet.
+
+
+```{r}
+centros_deport_geo_b <- centros_deport_geo %>%
+          filter(!is.na(Name), !is.na(tipo)) %>%
+  mutate_if(is.character, iconv, from="UTF-8", to="latin1" )
+```
+
+
+Cargamos los puntos de los centros deportivos y editamos su visualización.
+
+
+```{r}
+leaflet() %>%
+   addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircleMarkers(data=union_prueba,
+             popup=paste("Nombre:",union_prueba$Name, "<br>",
+                           "Tipo:", union_prueba$tipo))%>%
+  addPolygons(data=barriospopu_salta, color="blue")%>%
+addPolygons(data=poligono_salta, color = "red")
+```
+
+                                        
+```{r}
+leaflet() %>%
+   addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircleMarkers(data=union_prueba,
+             popup=paste("Nombre:",union_prueba$Name, "<br>",
+                           "Tipo:", union_prueba$tipo),
+             color = ~colorFactor(palette=c("seagreen4","deeppink","deepskyblue","darkolivegreen","darkgoldenrod1","cyan","coral"), 
+                                        levels=union_prueba$tipo)(tipo))%>%
+  addPolygons(data=barriospopu_salta, color="red")%>%
+addPolygons(data=poligono_salta)
+```                                        
+             
+             
+Con este último mapa podemos ver todos los puntos de los centros deportivos con un color diferente por cada tipo de establecimiento, con sus etiquetas correspondientes. También tenemos los bordes de la ciudad de Salta y de los barrios populares del RENABAP por lo que al tener la posibilidad de hacer zoom podemos ver la relación estos puntos con los diferente barrios.
+
+
+## **CONCLUSIONES**
+
+
+Podemos detectar algunos detalles: 
+
+- El barrio con mayor cantidad de centros deportivos es el Centro y tiene 63 establecimientos.En estrecha relación con el centro económico de la ciudad de Salta.
+- Los 5 primeros barrios con mayor cantidad de oferta deportiva son:
+1. <span style="color:red">**Centro**</span>
+2. <span style="color:red">**20 de Febrero**</span>
+3. <span style="color:red">**Belgrano**</span>
+4. Tres Cerritos
+5. Calixto Gauna
+- La fuente de todas las observaciones es<https:http://idemsa.municipalidadsalta.gob.ar/datos-abiertos.html> y <http://www.idesa.gob.ar/>.
+- La cantidad promedio de centros deportivos es de 3-4 colegios por barrio, sin embargo por la visualización vemos que la distribución es bastante inequitativa.
+- Sólo un barrio popular del RENABAP tiene un centro de acceso al deporte lo cual muestra la brecha que hay en cuanto a la accesibilidad y la integración social.
+
+-En cuanto a la disponibilidad de información de esta ciudad se complicó conseguir la información deseada.
+-Hubiera sido interesante poder cruzar los datos entre polígonos, entre los distintos barrios para saber cuáles son los que tienen relación con barrios del RENABAP o hacer un buffer por cada centroide de los barrios RENABAP y ver cuantos establecimientos se encuentran en un radio de 10 cuadras como mínimo.
+
+
+
